@@ -1,0 +1,83 @@
+name: Publicar VendaFácil
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+        id: pages
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.1'
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - name: Compilar para GitHub Pages
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ vars.SUPABASE_KEY }}
+        run: |
+          : "${SUPABASE_URL:?Defina a variável SUPABASE_URL}"
+          : "${SUPABASE_KEY:?Defina a variável SUPABASE_KEY}"
+          node <<'NODE'
+          const key = process.env.SUPABASE_KEY;
+          let isPublic = key.startsWith('sb_publishable_');
+          if (!isPublic) {
+            try {
+              const payload = JSON.parse(Buffer.from(key.split('.')[1], 'base64url'));
+              isPublic = payload.role === 'anon';
+            } catch {}
+          }
+          if (!isPublic) throw new Error('Use uma chave pública do Supabase.');
+          NODE
+          flutter build web --release --base-href "${BASE_PATH%/}/" \
+            --dart-define="SUPABASE_URL=$SUPABASE_URL" \
+            --dart-define="SUPABASE_KEY=$SUPABASE_KEY"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/web
+
+  migrate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.72.7
+      - name: Aplicar migrações
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          : "${SUPABASE_DB_URL:?Defina o secret SUPABASE_DB_URL}"
+          supabase db push --db-url "$SUPABASE_DB_URL"
+
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
