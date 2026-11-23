@@ -67,7 +67,17 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           : "${SUPABASE_DB_URL:?Defina o secret SUPABASE_DB_URL}"
-          supabase db push --db-url "$SUPABASE_DB_URL"
+          if supabase db push --db-url "$SUPABASE_DB_URL" --dry-run; then
+            supabase db push --db-url "$SUPABASE_DB_URL" --yes
+            exit 0
+          fi
+          migration_dir="$(mktemp -d "$RUNNER_TEMP/vendafacil.XXXXXX")"
+          mkdir -p "$migration_dir/supabase/migrations"
+          cp supabase/config.toml "$migration_dir/supabase/"
+          # Keep the database's existing history inside this runner.
+          supabase --workdir "$migration_dir" migration fetch --db-url "$SUPABASE_DB_URL"
+          cp supabase/migrations/*.sql "$migration_dir/supabase/migrations/"
+          supabase --workdir "$migration_dir" db push --db-url "$SUPABASE_DB_URL" --yes
 
   deploy:
     needs: migrate
